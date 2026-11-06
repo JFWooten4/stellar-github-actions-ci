@@ -93,15 +93,16 @@ runs:
         APPROVAL_LABEL: ${{ inputs.approval-label }}
       run: gh pr edit "${{ github.event.pull_request.number }}" --remove-label "$APPROVAL_LABEL" || true
 
-    - name: Comment teardown
+    - name: Update preview comment on teardown
       if: github.event.action == 'closed'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
-      run: >-
-        gh pr comment "${{ github.event.pull_request.number }}"
-        --body 'PR Preview: torn down'
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PREVIEW_MESSAGE: 'PR Preview: torn down'
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/../comment/upsert.sh"
 
     # -------------------------------------------------------------------------
     # Gate: every identity that could have supplied the head commit must be an

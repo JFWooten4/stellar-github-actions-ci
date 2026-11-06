@@ -67,11 +67,12 @@ runs:
         GH_REPO: ${{ github.repository }}
       run: gh pr edit "${{ github.event.pull_request.number }}" --add-label preview
 
-    - name: Comment preview URL
+    - name: Update preview URL comment
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
         GH_REPO: ${{ github.repository }}
-      run: >-
-        gh pr comment "${{ github.event.pull_request.number }}"
-        --body "PR Preview: https://${{ inputs.preview-host }}"
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PREVIEW_MESSAGE: 'PR Preview: https://${{ inputs.preview-host }}'
+        ACTION_PATH: ${{ github.action_path }}
+      run: bash "$ACTION_PATH/../comment/upsert.sh"

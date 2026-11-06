@@ -1,6 +1,6 @@
 # PR Preview — Composite Actions
 
-Per-PR preview environments for org-member PRs, deployed by ArgoCD. On every push to an open PR the flow builds the preview image(s), pushes them to ECR, labels the PR with `preview` so ArgoCD's ApplicationSet picks it up, and comments the preview URL. When the PR closes (merged or not), it removes the label and comments that the preview was torn down. ArgoCD does the actual deploying — these actions only produce the images and the signal.
+Per-PR preview environments for org-member PRs, deployed by ArgoCD. On every push to an open PR the flow builds the preview image(s), pushes them to ECR, labels the PR with `preview` so ArgoCD's ApplicationSet picks it up, and updates the preview URL comment. When the PR closes (merged or not), it removes the label and edits that same comment to show that the preview was torn down. ArgoCD does the actual deploying — these actions only produce the images and the signal.
 
 The flow is two actions that bracket your build, so your repo owns how its images are built (Makefiles, multiple images, non-root Dockerfiles) without weakening the security model:
 
@@ -13,10 +13,10 @@ The flow is two actions that bracket your build, so your repo owns how its image
 ## How it works
 
 1. **Withdraw the signal** (`gate`). On every event, the `preview` label is removed first. The ApplicationSet derives `head_sha` from the live PR, so a label left over from a previous build would otherwise let it deploy `pr-<number>-<new-sha>` before that image is pushed — and point at a nonexistent tag for as long as that commit stays the head if the build fails. Removing it up front makes the signal fail closed: the label is present only while the images it implies exist. The tradeoff is that the preview goes dark while a rebuild is in flight.
-2. **PR closed?** (`gate`) The removal above is the teardown; a "torn down" comment is added and `member` is `false`, so nothing else runs.
+2. **PR closed?** (`gate`) The removal above is the teardown; the preview comment is edited to say "torn down" (if one exists) and `member` is `false`, so nothing else runs.
 3. **Org-membership gate** (`gate`). A GitHub App token checks that the PR author, the actor who triggered the run, and the head-repo owner are all members of the org (`GITHUB_TOKEN` cannot read org membership). The gate applies to every PR — branch or fork — so an org member's fork PR gets a preview while an outside contributor's does not. Non-member PRs stop here, unless a member approves one build of a same-repo PR with the optional approval label (see [Maintainer-approved previews](#maintainer-approved-previews)). The up-front removal already revoked any stale or hand-applied `preview` label, so CI stays authoritative.
 4. **Build and push** (your workflow). Check out the PR head SHA — not the synthetic merge commit — build, and push each image as `<registry>/<repository>:<image-tag>`, where `image-tag` is `pr-<number>-<head-sha>`.
-5. **Publish** (`publish`). Confirm every listed image exists in the registry (`docker manifest inspect`), then — and only then — restore the `preview` label and comment `https://<preview-host>` on the PR. A failed or cancelled build, a miswired build step, or a mismatched tag all leave the label off, never a broken preview.
+5. **Publish** (`publish`). Confirm every listed image exists in the registry (`docker manifest inspect`), then — and only then — restore the `preview` label and create or edit the PR's single preview URL comment. A failed or cancelled build, a miswired build step, or a mismatched tag all leave the label off, never a broken preview.
 
 There is one residual window: between a push landing and the workflow's first step running (typically seconds), the generator can observe the new `head_sha` with the previous run's label still attached and briefly render an Application for a not-yet-pushed tag. This self-heals as soon as the label removal runs; the ApplicationSet should tolerate a transiently missing image rather than treat it as fatal.
 
@@ -125,7 +125,7 @@ The trust boundary lives in your workflow, so these are not optional:
 | Input | Required | Description |
 |---|---|---|
 | `images` | yes | Fully qualified image references (`registry/repository:tag`), one per line; every one must exist before the label is applied |
-| `preview-host` | yes | Hostname the preview will be served on; commented on the PR as `https://<preview-host>` |
+| `preview-host` | yes | Hostname the preview will be served on; published in the PR's reusable preview comment as `https://<preview-host>` |
 
 ## Maintainer-approved previews
 
@@ -176,6 +176,22 @@ The workflow runs on `pull_request_target`, which executes in the base repo's co
 - The workflow file and the actions are always taken from the base repo / `stellar/actions@main`, so a fork cannot alter the gate for its own run.
 - The guards described in the caller contract are what keep this true. Building before `gate`, or leaving a post-gate step unguarded, executes untrusted code in a privileged job — do not do it.
 
+## Preview comment lifecycle
+
+Both `publish` and `gate` use the same updater in `comment/upsert.sh`. The initial
+successful publish creates one Actions-bot comment with a hidden
+`<!-- sdf-pr-preview -->` marker. Later publishes update the URL in that same
+comment; closing the PR edits it to `PR Preview: torn down`, and reopening
+reuses the comment again. Identical content is left untouched, and a PR that
+never had a preview does not get a teardown-only comment.
+
+For PRs created before this behavior, the updater adopts the oldest Actions-bot
+comment whose body starts with `PR Preview: https://` (or is exactly
+`PR Preview: torn down`) and adds the marker. It never edits other users' or
+bots' comments. The helper searches all pages of issue comments.
+
+Regression tests: `python3 sdf-pr-preview/comment/test_upsert.py` (requires `jq`).
+
 ## Teardown
 
-Teardown on close is technically redundant with the ApplicationSet generator (a closed PR leaves its result set anyway), but removing the label explicitly makes it immediate and leaves a trace in the PR timeline. The same label removal runs at the start of every build, so a preview is also (deliberately) absent while a new head SHA is being built — a failed or cancelled build leaves the preview down rather than pointing at an image that was never pushed.
+Teardown on close is technically redundant with the ApplicationSet generator (a closed PR leaves its result set anyway), but removing the label explicitly makes it immediate and updating the original preview comment leaves a trace without a new timeline entry. The same label removal runs at the start of every build, so a preview is also (deliberately) absent while a new head SHA is being built — a failed or cancelled build leaves the preview down rather than pointing at an image that was never pushed.
